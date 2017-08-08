@@ -252,7 +252,7 @@ namespace chainbase {
          class session {
             public:
                session( session&& mv )
-               :_index(mv._index),_apply(mv._apply){ mv._apply = false; }
+               :_index(mv._index),_apply(mv._apply),_revision(mv._revision){ mv._apply = false; }
 
                ~session() {
                   if( _apply ) {
