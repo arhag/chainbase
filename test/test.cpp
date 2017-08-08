@@ -6,6 +6,7 @@
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/member.hpp>
+#include <boost/multi_index/composite_key.hpp>
 
 #include <iostream>
 
@@ -15,11 +16,7 @@ using namespace boost::multi_index;
 //BOOST_TEST_SUITE( serialization_tests, clean_database_fixture )
 
 struct book : public chainbase::object<0, book> {
-
-   template<typename Constructor, typename Allocator>
-    book(  Constructor&& c, Allocator&& a ) {
-       c(*this);
-    }
+    CHAINBASE_DEFAULT_CONSTRUCTOR(book)
 
     id_type id;
     int a = 0;
@@ -37,6 +34,35 @@ typedef multi_index_container<
 > book_index;
 
 CHAINBASE_SET_INDEX_TYPE( book, book_index )
+
+struct author : public chainbase::object<1, author> {
+    CHAINBASE_DEFAULT_CONSTRUCTOR(author, (name))
+    
+    id_type id;
+    shared_string name;
+    int num_books = 0;
+};
+
+struct by_name;
+struct by_num_books;
+
+using author_index = shared_multi_index_container<
+   author,
+   indexed_by<
+      ordered_unique< member<author, author::id_type, &author::id> >,
+      ordered_non_unique< tag<by_name>, member<author, shared_string, &author::name> >,
+      ordered_unique< tag<by_num_books>, 
+         composite_key<author, 
+            member<author, int, &author::num_books>,
+            member<author, shared_string, &author::name>,
+            member<author, author::id_type, &author::id>
+         >,
+         composite_key_compare< std::greater<int>, std::less<shared_string>, std::less<author::id_type> >
+      >
+   >
+>;
+
+CHAINBASE_SET_INDEX_TYPE( author, author_index )
 
 BOOST_AUTO_TEST_CASE( open_and_create ) {
    boost::filesystem::path temp = boost::filesystem::unique_path();
@@ -186,6 +212,7 @@ BOOST_AUTO_TEST_CASE( check_revision ) {
             BOOST_REQUIRE_EQUAL( db.revision(), 44 );
             BOOST_REQUIRE_EQUAL( session2.revision(), 44 );
 
+            BOOST_TEST_MESSAGE( "Squashing latest undo session" );
             session2.squash();
 
             BOOST_REQUIRE_EQUAL( db.revision(), 43 ); /// Revision should have decreased because of the squash.
@@ -214,6 +241,79 @@ BOOST_AUTO_TEST_CASE( check_revision ) {
       
       decltype(db) db2(std::move(db));
       BOOST_REQUIRE_EQUAL( db2.revision(), 42 );
+
+      {
+         BOOST_TEST_MESSAGE( "Starting undo session" );
+         auto session = db2.start_undo_session(true);
+
+         BOOST_REQUIRE_EQUAL( session.revision(), 43 );
+
+         db2.add_index< author_index >();
+
+         BOOST_TEST_MESSAGE( "Creating author" );
+         const auto& new_author = db2.create<author>( []( author& a ) {
+            a.name = "Mark Twain";
+            a.num_books = 13;
+         });
+
+         auto& bindx = db2.get_index<book_index>();
+         BOOST_REQUIRE_EQUAL( bindx.revision(), 43 );
+
+         auto& aindx = db2.get_mutable_index<author_index>();
+         BOOST_REQUIRE_EQUAL( aindx.revision(), 43 ); /// Should have same revision as bindx even though their stack sizes are different
+
+         /*
+         aindx.set_revision(13); /// This is currently allowed (since the index has no undo sessions) even though it probably shouldn't be allowed. TODO: fix this.
+         BOOST_REQUIRE_EQUAL( aindx.revision(), 13 );
+         */
+
+         {
+            BOOST_TEST_MESSAGE( "Starting undo session" );
+            auto session = db2.start_undo_session(true);
+
+            BOOST_REQUIRE_EQUAL( db2.revision(), 44 );
+            BOOST_REQUIRE_EQUAL( bindx.revision(), 44 );
+            BOOST_REQUIRE_EQUAL( aindx.revision(), 44 );
+
+            BOOST_CHECK_THROW( aindx.set_revision(13), std::logic_error );
+
+            BOOST_TEST_MESSAGE( "Modifying author" );
+
+            db2.create<author>( []( author& a ) {
+               a.name = "F. Scott Fitzgerald";
+               a.num_books = 13;
+            });
+
+            BOOST_REQUIRE_EQUAL( (db2.get<author, by_num_books, int>(13).name), "F. Scott Fitzgerald" );
+
+            auto& aindx2 = db2.get_index<author_index, by_num_books>();
+            BOOST_REQUIRE_EQUAL( aindx2.begin()->name, "F. Scott Fitzgerald" );
+
+            db2.modify( new_author, [&]( author& a ) {
+                a.num_books += 11;
+            });
+
+            BOOST_REQUIRE_EQUAL( aindx2.begin()->name, "Mark Twain" );
+
+            BOOST_TEST_MESSAGE( "Pushing latest undo session" );
+            session.push();
+
+            BOOST_TEST_MESSAGE( "Allowing latest undo session to go out of scope" );
+         }
+
+         BOOST_REQUIRE_EQUAL( db2.revision(), 44 );
+
+         BOOST_REQUIRE_EQUAL( (db2.get<author, by_num_books, int>(24).name), "Mark Twain" );
+
+         BOOST_TEST_MESSAGE( "Committing up to and including the latest revision" );
+         db2.commit(44);
+
+         BOOST_REQUIRE_EQUAL( db2.revision(), 44 );
+
+         BOOST_TEST_MESSAGE( "Allowing latest undo session to go out of scope" );
+      }
+
+      BOOST_REQUIRE_EQUAL( db2.revision(), 44 );
 
    } catch ( ... ) {
       bfs::remove_all( temp );

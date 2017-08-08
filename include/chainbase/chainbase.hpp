@@ -20,6 +20,9 @@
 #include <boost/thread.hpp>
 #include <boost/throw_exception.hpp>
 
+#include <boost/preprocessor/seq/for_each.hpp>
+#include <boost/preprocessor/facilities/overload.hpp>
+
 #include <array>
 #include <atomic>
 #include <fstream>
@@ -122,9 +125,21 @@ namespace chainbase {
    #define CHAINBASE_SET_INDEX_TYPE( OBJECT_TYPE, INDEX_TYPE )  \
    namespace chainbase { template<> struct get_index_type<OBJECT_TYPE> { typedef INDEX_TYPE type; }; }
 
-   #define CHAINBASE_DEFAULT_CONSTRUCTOR( OBJECT_TYPE ) \
-   template<typename Constructor, typename Allocator> \
-   OBJECT_TYPE( Constructor&& c, Allocator&&  ) { c(*this); }
+   #define CHAINBASE_DEFAULT_CONSTRUCTOR1( OBJECT_TYPE )           \
+   OBJECT_TYPE() = delete;                                         \
+   public:                                                         \
+   template<typename Constructor, typename Allocator>              \
+   OBJECT_TYPE( Constructor&& c, chainbase::allocator<Allocator> ) \
+   { c(*this); }
+   #define CHAINBASE_DEFAULT_CONSTRUCTOR2_MACRO(x, y, field) ,field(a)
+   #define CHAINBASE_DEFAULT_CONSTRUCTOR2( OBJECT_TYPE, FIELDS )                 \
+   OBJECT_TYPE() = delete;                                                       \
+   public:                                                                       \
+   template<typename Constructor, typename Allocator>                            \
+   OBJECT_TYPE( Constructor&& c, chainbase::allocator<Allocator> a)              \
+   : id(0) BOOST_PP_SEQ_FOR_EACH(CHAINBASE_DEFAULT_CONSTRUCTOR2_MACRO, _, FIELDS) \
+   { c(*this); }
+   #define CHAINBASE_DEFAULT_CONSTRUCTOR(...) BOOST_PP_OVERLOAD(CHAINBASE_DEFAULT_CONSTRUCTOR, __VA_ARGS__)(__VA_ARGS__)
 
    template< typename value_type >
    class undo_state
@@ -766,6 +781,8 @@ namespace chainbase {
                 _index_map.resize( type_id + 1 );
 
              auto new_index = new index<index_type>( *idx_ptr );
+             if( _index_list.size() > 0 )
+               new_index->set_revision( revision() );
              _index_map[ type_id ].reset( new_index );
              _index_list.push_back( new_index );
          }
