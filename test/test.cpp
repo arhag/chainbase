@@ -38,7 +38,6 @@ typedef multi_index_container<
 
 CHAINBASE_SET_INDEX_TYPE( book, book_index )
 
-
 BOOST_AUTO_TEST_CASE( open_and_create ) {
    boost::filesystem::path temp = boost::filesystem::unique_path();
    try {
@@ -129,6 +128,98 @@ BOOST_AUTO_TEST_CASE( open_and_create ) {
       bfs::remove_all( temp );
       throw;
    }
+   bfs::remove_all( temp );
+}
+
+BOOST_AUTO_TEST_CASE( check_revision ) {
+   boost::filesystem::path temp = boost::filesystem::unique_path();
+   try {
+      std::cerr << temp.native() << " \n";
+
+      chainbase::database db(temp, database::read_write, 1024*1024*8);
+      
+      BOOST_REQUIRE_EQUAL( db.revision(), -1 ); /// No indices currently exist at this point
+      
+      db.add_index< book_index >();
+
+      BOOST_REQUIRE_EQUAL( db.revision(), 0 ); /// After adding an index, the revision should now be the default revision of 0
+
+      db.set_revision( 42 ); /// Set revision to arbitrary number
+
+      BOOST_REQUIRE_EQUAL( db.revision(), 42 ); /// Make sure set revision worked
+
+      BOOST_TEST_MESSAGE( "Creating book" );
+      const auto& new_book = db.create<book>( []( book& b ) {
+          b.a = 1;
+          b.b = 2;
+      } );
+
+      db.modify( new_book, [&]( book& b ) {
+          b.a = 3;
+          b.b = 4;
+      });
+
+      {
+         BOOST_TEST_MESSAGE( "Starting undo session" );
+         auto session1 = db.start_undo_session(true);
+         BOOST_REQUIRE_EQUAL( db.revision(), 43 );
+         BOOST_REQUIRE_EQUAL( session1.revision(), 43 );
+         BOOST_CHECK_THROW( db.set_revision( 13 ), std::logic_error ); /// Should not be able to change revision when the undo stack is not empty
+
+         db.modify( new_book, [&]( book& b ) {
+             b.a = 5;
+             b.b = 6;
+         });
+
+         BOOST_REQUIRE_EQUAL( new_book.a, 5 );
+         BOOST_REQUIRE_EQUAL( new_book.b, 6 );
+
+         {
+            BOOST_TEST_MESSAGE( "Starting undo session" );
+            auto session2 = db.start_undo_session(true);
+
+            db.modify( new_book, [&]( book& b ) {
+                b.a = 7;
+                b.b = 8;
+            });
+
+            BOOST_REQUIRE_EQUAL( db.revision(), 44 );
+            BOOST_REQUIRE_EQUAL( session2.revision(), 44 );
+
+            session2.squash();
+
+            BOOST_REQUIRE_EQUAL( db.revision(), 43 ); /// Revision should have decreased because of the squash.
+            BOOST_REQUIRE_EQUAL( session2.revision(), 44 ); /// But the revision of the session has not changed. Is this desired behavior? Or should the revision of the session decrement as well?
+
+            BOOST_TEST_MESSAGE( "Allowing latest undo session to go out of scope" );
+         }
+
+         /// Despite session2 going out of scope, the revision has not changed and neither has the book object because we explicitly called squash on the session.
+         BOOST_REQUIRE_EQUAL( db.revision(), 43 );
+         BOOST_REQUIRE_EQUAL( new_book.a, 7 );
+         BOOST_REQUIRE_EQUAL( new_book.b, 8 ); 
+
+         BOOST_REQUIRE_EQUAL( session1.revision(), 43);
+         decltype(session1) session(std::move(session1)); /// This should simply replace session1 with session but otherwise keep the same behavior.
+         BOOST_REQUIRE_EQUAL( db.revision(), 43 );
+         BOOST_REQUIRE_EQUAL( session.revision(), 43);
+
+         BOOST_TEST_MESSAGE( "Allowing latest undo session to go out of scope" );
+      }
+
+      /// However, when session1 went out of scope, it automatically undid the head session (revision 43) which reverts the state of the book back to what it was set to prior to creating session1.
+      BOOST_REQUIRE_EQUAL( db.revision(), 42 );
+      BOOST_REQUIRE_EQUAL( new_book.a, 3 );
+      BOOST_REQUIRE_EQUAL( new_book.b, 4 );
+      
+      decltype(db) db2(std::move(db));
+      BOOST_REQUIRE_EQUAL( db2.revision(), 42 );
+
+   } catch ( ... ) {
+      bfs::remove_all( temp );
+      throw;
+   }
+   bfs::remove_all( temp );
 }
 
 // BOOST_AUTO_TEST_SUITE_END()
