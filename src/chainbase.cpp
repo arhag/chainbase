@@ -33,14 +33,18 @@ namespace chainbase {
    database::database(const bfs::path& dir, open_flags flags, uint64_t shared_file_size) {
       bool write = flags & database::read_write;
 
-      if (!bfs::exists(dir)) {
-         if(!write) BOOST_THROW_EXCEPTION( std::runtime_error( "database file not found at " + dir.native() ) );
+      auto abs_path = bfs::absolute( dir / "shared_memory.bin" );
+
+      if( !write && !bfs::exists(abs_path) ) 
+      {
+         BOOST_THROW_EXCEPTION( std::runtime_error( "database file not found at " + abs_path.native() ) );
+      }
+      else if( !bfs::exists(dir) )
+      {     
+         bfs::create_directories(dir);
       }
 
-      bfs::create_directories(dir);
-
       _data_dir = dir;
-      auto abs_path = bfs::absolute( dir / "shared_memory.bin" );
 
       if( bfs::exists( abs_path ) )
       {

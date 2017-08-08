@@ -322,4 +322,35 @@ BOOST_AUTO_TEST_CASE( check_revision ) {
    bfs::remove_all( temp );
 }
 
+
+BOOST_AUTO_TEST_CASE( check_read_only ) {
+   boost::filesystem::path temp = boost::filesystem::unique_path();
+   try {
+      namespace bfs = boost::filesystem;
+
+      std::cerr << temp.native() << " \n";
+
+      BOOST_CHECK_THROW( chainbase::database db(temp, database::read_only, 1024*1024*8), std::runtime_error );
+
+      bfs::create_directories( temp );
+
+      BOOST_CHECK_THROW( chainbase::database db(temp, database::read_only, 1024*1024*8), std::runtime_error );
+
+      {
+         chainbase::database db(temp, database::read_write, 1024*1024*8);
+
+         BOOST_REQUIRE_EQUAL( db.is_read_only(), false );
+      }
+
+      chainbase::database db(temp, database::read_only, 1024*1024*8);
+      BOOST_REQUIRE_EQUAL( db.is_read_only(), true );
+
+
+   } catch ( ... ) {
+      bfs::remove_all( temp );
+      throw;
+   }
+   bfs::remove_all( temp );
+}
+
 // BOOST_AUTO_TEST_SUITE_END()
